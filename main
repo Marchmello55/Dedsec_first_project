@@ -1,0 +1,259 @@
+import os
+import re
+import logging
+
+from telethon import TelegramClient, events
+from config import Config, load_config
+from database import requests as rq
+from database import models
+from telethon.errors import PeerFloodError
+
+
+# Загружаем конфигурацию
+config: Config = load_config()
+api_id = config.tg_bot.api_id
+api_hash = config.tg_bot.api_hash
+
+# Создаем клиент
+client = TelegramClient('session_name', api_id, api_hash, system_version="4.16.30-vxCUSTOM")
+
+
+async def forward_message(from_chat: str, to_chat: str, message_id: int):
+    try:
+        await client.send_message('username', 'Testing Telethon!')
+        await client.forward_messages(to_chat, message_id, from_chat)
+        print(f"Сообщение {message_id} успешно переслано из {from_chat} в {to_chat}.")
+    except Exception as e:
+        print(f"Ошибка при пересылке сообщения: {e}")
+
+
+async def comment_on_post(channel_username: str, post_id: int, comment_text: str):
+    try:
+        discussion = await client.get_messages(channel_username, ids=post_id)
+
+        if discussion.replies and discussion.replies.replies:
+            await client.send_message(
+                entity=channel_username,
+                message=comment_text,
+                comment_to=post_id,
+                parse_mode='markdown'
+            )
+            print(f"Комментарий добавлен к посту {post_id} в канале {channel_username}.")
+        else:
+            print(f"Невозможно добавить комментарий к посту {post_id} в канале {channel_username}.")
+    except Exception as e:
+        print(f"Ошибка при добавлении комментария: {e}")
+
+
+
+async def kanal(URL):
+    i = 0
+    async for message in client.iter_messages(URL):
+        print(message.id, message.text)
+        if message.media:
+            await forward_message(from_chat=URL, message_id=message.id, to_chat = "@MJJGOAT")
+        await comment_on_post(channel_username=URL, post_id=message.id, comment_text="збс пост")
+        i += 1
+        if i >= 5:
+            break
+
+
+async def extract_telegram_links(text):
+    pattern = r'(https?://t\.me/\w+|@[\w\d_]+)'
+    matches = re.findall(pattern, text)
+    return matches
+
+@client.on(events.NewMessage(pattern=r'/start'))
+async def start_command(event):
+    await event.reply("Бот активен! Для вывода списка возможностей напишите /help.")
+
+@client.on(events.NewMessage(pattern=r'/help'))
+async def help_command(event):
+    await event.reply("Я могу:\n"
+                "/start - Запуск и проверка работы бота.\nПример использования команды: '/start'.\n"
+                "/search - Поиск людей по интересам.\nПример использования команды: '/search футбол программирование'.\n"
+                "/url - Список отобранных каналов.\nПример использования команды: '/url'.\n"
+                "/take_url - Указание сразу нескольких ссылок на каналы\nПример использования команды: '/take_url https://t.me/Tdsfkjjhv @dghusghi'.\n"
+                "/include_url - добавление ОДНОГО канала по интересу\nПример использования команды: '/include_url https://t.me/Tdsfkjjhv' или '/include_url @dghusghi'.\n"
+                "/stop - Прекращение работы бота.\nПример использования команды: '/stop'.\n"
+                "/help - Список доступных команд.\nПример использования команды: '/help'.\n"
+                "/balance - Баланс пользователя.\nПример использования команды: '/balance'.\n"
+                #Если имеется '/', но нет такой команды - команда не найдена
+                "/chat - Просто пообщаться!(код из образца(напрямую пользователь с chatgpt)) 😊")
+
+@client.on(events.NewMessage(pattern=r'/search'))
+async def search_command(event):
+    message_text = event.message.text.lower()
+    interests_text = message_text.split("/search", 1)
+    interests_text = [item for item in interests_text if item != ""]
+    print(interests_text)
+    if interests_text:
+        user_id = event.sender_id
+        await rq.add_new_user(user_id=user_id)
+        await event.reply("Начало поиска.")  # Правильный запрос
+        for REQUEST in interests_text:
+            print(REQUEST)
+            await rq.add_new_request(REQUEST=REQUEST)
+            await rq.include_user_request(user_id=user_id, REQUESTS=REQUEST)
+            await client.send_message(7787814237, f'{REQUEST}')
+    else:
+        await event.reply("В команде /search ошибка ввода!\nПример ввода команды: '/search программирование', '/search футбол'.") #Ошибка при вводе запроса
+
+@client.on(events.NewMessage(pattern=r'/take_url'))
+async def take_url_command(event):
+    message_text = event.message.text.lower()
+    interests_text = message_text.split("/take_url", 1)
+    if len(interests_text) > 1:
+        interests_text = interests_text[1].strip().replace(" ", "\n")
+        links = await extract_telegram_links(' '.join(interests_text))
+        user_id = event.sender_id
+        await rq.add_new_user(user_id=user_id)
+        await event.reply("Список каналов учтён.")  # Правильный запрос
+        await rq.include_user_request(user_id=user_id, REQUESTS="Кастом")
+        for link in links:
+            await rq.update_url_user_id(user_id=user_id, URL=link)
+            await kanal(URL=link)
+    else:
+        await event.reply(
+            "В команде /take_url ошибка ввода!\nПример ввода команды: '/take_url https://t.me/Tdsfkjjhv @dghusghi'."
+        )
+
+@client.on(events.NewMessage(pattern=r'/url'))
+async def url_command(event):
+    user_id = event.sender_id
+    await rq.add_new_user(user_id=user_id)
+    URL = await rq.get_user_tg_id(user_id=user_id)
+    if isinstance(URL, str):
+        URL = [URL]
+    URL = [item for item in URL if item.strip()]
+    URL = "\n".join(URL)
+    if URL:
+        await event.reply(f"Вот список каналов по вашему запросу:\n{URL}")
+    else:
+        await event.reply(
+            "Список каналов пуст. Заполните его используя команды, указанные в /help."
+        )
+
+@client.on(events.NewMessage(pattern=r'/include_url'))
+async def include_url_command(event):
+    sender = await event.get_sender()
+    message_text = event.message.text.lower()
+    interests_text = message_text.split("/include_url", 1)
+    interests_text = interests_text[1].strip().replace(" ", "\n")
+    interests_text = await extract_telegram_links(' '.join(interests_text))
+    await rq.include_url_user_id(user_id=sender.id, URL=interests_text)
+    await event.reply("Канал добавлен.") #Правильный запрос
+    await event.reply("В команде /include_url ошибка ввода!\nПример ввода команды: '/include_url https://t.me/Tdsfkjjhv' или '/include_url @dghusghi'.") #Ошибка при вводе запроса
+    await event.reply("Количество каналов превышает указанное количество.\nДля добавления сразу нескольких каналов, используйте команду '/take_url'.") #Больше одной ссылки
+
+@client.on(events.NewMessage(pattern=r'/stop'))
+async def stop_command(event):
+    await event.reply("Бот приостановлен.") #Правильный запрос
+
+
+@client.on(events.NewMessage(pattern=r'/users'))
+async def stop_command(event):
+    list = []
+    await event.reply("Список пользователей бота: .") #Правильный запрос
+
+
+
+@client.on(events.NewMessage(pattern=r'/balance'))
+async def stop_command(event):
+    await event.reply("Баланс пользователя на счету.")  # Правильный запрос
+
+
+@client.on(events.NewMessage())
+async def handle_messages(event):
+    sender = await event.get_sender()
+
+    # Определяем имя отправителя (пользователь, канал или чат)
+    if hasattr(sender, 'first_name') and sender.first_name:
+        sender_name = sender.first_name  # Имя пользователя
+    elif hasattr(sender, 'title') and sender.title:
+        sender_name = sender.title  # Название канала или чата
+    else:
+        sender_name = "Неизвестный отправитель"  # На случай отсутствия информации
+
+    message_text = event.message.text.strip().lower()
+
+    if event.is_private:
+        if sender.id == 7787814237:
+            links = await extract_telegram_links(message_text)
+            for link in links:
+                await kanal(URL=link)
+        else:
+            print(f"Получено личное сообщение от {sender_name} (ID: {sender.id}): {message_text}")
+
+            if "привет" in message_text:
+                await event.reply(f"Привет, {sender_name}! Чем могу помочь?")
+            elif "помощь" in message_text:
+                await event.reply(
+                    "Я могу:\n"
+                    "- Найти людей по интересам: напиши 'найди людей по интересам: спорт, музыка'\n"
+                    "- Ответить на вопросы\n"
+                    "- Просто пообщаться! 😊"
+                )
+            elif "найди людей по интересам:" in message_text:
+                await process_interests(event, sender_name)
+            # else:
+            #     await event.reply(f"Я не понял, {sender_name}. Попробуй написать 'помощь', чтобы узнать мои возможности.")
+    else:
+        await handle_group_or_channel(event)
+
+
+async def process_interests(event, sender_name):
+    message_text = event.message.text.lower()
+    interests_text = message_text.split("найди людей по интересам:", 1)[1].strip()
+    user_id = event.sender_id
+
+    await rq.add_new_user(user_id=user_id)
+
+    interests_list = [interest.strip() for interest in interests_text.split(",") if interest.strip()]
+    for REQUEST in set(interests_list):
+        await rq.add_new_request(REQUEST=REQUEST)
+        await rq.include_user_request(user_id=user_id, REQUEST=REQUEST)
+
+    print(f"{sender_name} указал интересы: {interests_list}")
+    await event.reply(f"Спасибо, {sender_name}! Я записал твои интересы: {', '.join(interests_list)}")
+
+
+async def handle_group_or_channel(event):
+    sender = await event.get_sender()
+    message_text = event.message.text.strip().lower()
+    if event.is_reply:
+        original_message = await event.get_reply_message()
+        if original_message.sender_id == (await client.get_me()).id:
+            print("Ответ на ваш комментарий:", event.message.text)
+            await rq.add_chat_reaction_tg_id(tg_id=sender.id)
+            chat = await event.get_chat()  # Получаем объект чата
+            chat_link = None
+            # Проверяем, есть ли username у чата
+            if hasattr(chat, 'username') and chat.username:
+                chat_link = f"https://t.me/{chat.username}"
+            elif hasattr(chat, 'id'):
+                chat_link = f"tg://resolve?domain={chat.id}"  # Резервный вариант для чатов без username
+
+            # Вывод информации
+            print(f"Сообщение отправлено в чат: {chat.title if hasattr(chat, 'title') else 'Неизвестный чат'}")
+            print(f"Ссылка на чат: {chat_link}")
+
+            # Ответ пользователю с информацией о чате
+            if event.is_reply:
+                original_message = await event.get_reply_message()
+                await event.reply(f"Вы ответили на сообщение в чате {chat.title}.\nСсылка на чат: {chat_link}")
+            else:
+                await event.reply(f"Сообщение отправлено в чат {chat.title}.\nСсылка на чат: {chat_link}")
+        else:
+            print("Ответ не на ваш комментарий. Пропускаем...")
+
+
+async def main():
+    await models.async_main()
+    await client.start()
+    print("Клиент запущен")
+    await client.run_until_disconnected()
+
+
+if __name__ == "__main__":
+    client.loop.run_until_complete(main())
